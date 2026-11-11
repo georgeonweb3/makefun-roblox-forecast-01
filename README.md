@@ -31,7 +31,7 @@ Exactly two keys:
 
 - `probabilities`: rows `{"universe_id": int, "place": 1..10, "p": number}`,
   at most one row per game per place, at most 36 rows per place here.
-  Each place's named probabilities sum to 0.92; the other 0.08 is left
+  Each place's named probabilities sum to 0.95; the other 0.05 is left
   unnamed on purpose, because the scorer shares a place's unnamed
   remainder equally over every game on that read's chart not named at
   that place — brand-new games still score well above the 0.0001 floor.
@@ -48,13 +48,14 @@ none of the next 10 reads), so this is not a persistence guess:
    by recency and mixed in proportion to the window hours each bin
    covers. Smoothed with a persistence prior for sparse ranks.
 2. **Recency-weighted occupancy.** How often each game actually held
-   each place (96h half-life), blended in at 18% — it covers games that
+   each place (96h half-life), blended in at 30% — it covers games that
    just slipped off a place and games absent from the last snapshot.
-3. **Trend boost.** Rank velocity over a game's recent appearances
-   scales its mass (clamped, ≈0.74x–1.49x): fast climbers get more,
-   fast fallers less.
+3. **No trend boost.** A rank-velocity multiplier shipped in the first
+   version and was removed after walk-forward backtests on synthetic
+   chart histories (stable/typical/volatile/trending regimes) showed it
+   consistently cost log score; the kernels already price movement.
 4. **Calibration for the log score.** Per place, top-36 candidates are
-   floored at 0.0035, capped at 0.50, and normalised to 0.92. Nothing is
+   floored at 0.002, capped at 0.70, and normalised to 0.95. Nothing is
    0, nothing is near 1 — a confident wrong call costs −9.21 a place,
    an honest spread does not.
 5. **top10** is picked greedily place by place from those probabilities,

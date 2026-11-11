@@ -10,7 +10,7 @@ Reads the chart history in $MAKEFUN_INPUT_DIR (default /input):
 Writes one forecast to $MAKEFUN_OUTPUT_DIR (default /output)/forecast.json:
   {"probabilities": [{"universe_id": int, "place": int, "p": number}, ...],
    "top10": [10 distinct universe ids in order]}
-Each place's named probabilities sum to 0.92; the remaining 0.08 is left
+Each place's named probabilities sum to 0.95; the remaining 0.05 is left
 unnamed on purpose: the scorer shares a place's unnamed remainder equally
 over every game on that read's chart that was not named at that place, so
 brand-new games (published after the history ends) still score far above
@@ -26,14 +26,16 @@ Model (stdlib only, no network, no randomness, no wall clock):
      prior (a game is most likely to stay near its rank) so sparse
      ranks and short histories still give a sane distribution.
   2. Recency-weighted place occupancy (marginal): how often each game
-     actually held each place, half-life 96h. Blended in at 18% so games
+     actually held each place, half-life 96h. Blended in at 30% so games
      that repeatedly held a place keep credit even when they have just
      slipped off it, and games absent from the last snapshot are covered.
-  3. Trend boost: a game's rank velocity over its recent appearances
-     (ranks climbed per hour) scales its raw probabilities, clamped so a
-     fast climber gets at most ~1.5x and a fast faller at least ~0.74x.
-  4. Per place: keep the top 36 candidates, floor each at 0.0035,
-     cap each at 0.50, normalise to sum 0.92. No probability is 0 or
+  3. No trend boost: a rank-velocity multiplier was in the first version
+     and was removed after walk-forward backtests (synthetic chart
+     histories across stable/typical/volatile/trending regimes) showed
+     it consistently cost log score — recent rank velocity is mostly
+     noise at these horizons and the kernels already price movement.
+  4. Per place: keep the top 36 candidates, floor each at 0.002,
+     cap each at 0.70, normalise to sum 0.95. No probability is 0 or
      near 1, which is what the log score rewards: a confident wrong
      call costs ln(0.0001) = -9.21 a place, an honest spread does not.
   5. top10 is picked greedily place by place from the probabilities
@@ -51,14 +53,14 @@ import math
 import os
 from datetime import datetime, timezone
 
-TARGET_SUM = 0.92      # named share per place; 0.08 stays unnamed
-P_CAP = 0.50           # no game gets more than this at one place
-P_FLOOR = 0.0035       # every named game gets at least this
+TARGET_SUM = 0.95      # named share per place; 0.05 stays unnamed
+P_CAP = 0.70           # no game gets more than this at one place
+P_FLOOR = 0.002        # every named game gets at least this
 MAX_ROWS_PER_PLACE = 36
 MAX_TRACKED_RANK = 60  # transitions are tracked from ranks up to this
 PRIOR_WEIGHT = 6.0     # persistence-prior pseudo-count per kernel
-KERNEL_WEIGHT = 0.82   # transition kernel share of the raw score
-MARGINAL_WEIGHT = 0.18  # recency-weighted occupancy share
+KERNEL_WEIGHT = 0.70   # transition kernel share of the raw score
+MARGINAL_WEIGHT = 0.30  # recency-weighted occupancy share
 HORIZON_BINS = ((0.0, 12.0, 12.0), (12.0, 36.0, 24.0), (36.0, 72.0, 36.0))
 
 
@@ -203,23 +205,6 @@ def build_raw_scores(snapshots, places):
                 smoothed = (row[dest] + PRIOR_WEIGHT * prior[r][dest]) / denom
                 kernel_mix[r][dest] += share * smoothed
 
-    # --- rank velocity (trend) per game, from its recent appearances ---
-    appearances = {}
-    for idx, (at, _) in enumerate(snapshots):
-        for uid, r in rank_of[idx].items():
-            appearances.setdefault(uid, []).append((at, r))
-    trend = {}
-    for uid, apps in appearances.items():
-        recent = apps[-6:]
-        if len(recent) >= 2:
-            (t_first, r_first), (t_last, r_last) = recent[0], recent[-1]
-            span_h = (t_last - t_first) / 3600.0
-            if span_h >= 1.0:
-                velocity = (r_first - r_last) / span_h  # ranks climbed / hour
-                trend[uid] = math.exp(max(-0.3, min(0.4, velocity * 4.0)))
-                continue
-        trend[uid] = 1.0
-
     # --- combine kernel + marginal for every candidate game ---
     last_ranks = rank_of[-1]
     candidates = set(last_ranks)
@@ -227,7 +212,6 @@ def build_raw_scores(snapshots, places):
         candidates.update(marg_norm[place])
     raw = [dict() for _ in range(places + 1)]
     for uid in candidates:
-        boost = trend.get(uid, 1.0)
         r_last = last_ranks.get(uid)
         for place in range(1, places + 1):
             if r_last is not None and r_last <= MAX_TRACKED_RANK:
@@ -238,7 +222,7 @@ def build_raw_scores(snapshots, places):
                 base = 0.0
             base += MARGINAL_WEIGHT * marg_norm[place].get(uid, 0.0)
             if base > 0:
-                raw[place][uid] = base * boost
+                raw[place][uid] = base
     return raw
 
 
